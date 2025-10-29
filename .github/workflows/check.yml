@@ -1,8 +1,8 @@
-name: Dresden Termin Monitor
+name: Dresden Termin Monitor (Telegram)
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes (UTC); script itself uses Europe/Berlin window 06–19
+    - cron: "*/5 * * * *"   # every 5 minutes (UTC)
   workflow_dispatch:
 
 jobs:
@@ -10,21 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Europe/Berlin
-      PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
-      PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-        - name: Heartbeat
-  run: |
-    echo "HEARTBEAT: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
+      - name: Heartbeat
+        run: |
+          echo "HEARTBEAT: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+
 
       # Create package.json (ES modules enabled)
       - name: Create package.json
