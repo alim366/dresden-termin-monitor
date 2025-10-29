@@ -1,0 +1,13 @@
+{
+  "name": "dresden-termin-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node check.js"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.48.2",
+    "node-fetch": "^3.3.2"
+  }
+}
