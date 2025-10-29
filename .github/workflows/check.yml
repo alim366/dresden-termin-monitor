@@ -39,10 +39,10 @@ jobs:
           }
           EOF
 
-      - name: Install dependencies & browser
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
+- name: Install dependencies & browser
+  run: |
+    npm install --no-audit --no-fund
+    npx playwright install --with-deps chromium
 
       - name: Write checker
         run: |
