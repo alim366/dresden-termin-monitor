@@ -1,1 +1,1 @@
-termin monitor
+termin monitor telegram
