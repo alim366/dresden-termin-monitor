@@ -17,6 +17,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+        - name: Heartbeat
+  run: |
+    echo "HEARTBEAT: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
