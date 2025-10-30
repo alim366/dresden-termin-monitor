@@ -4,10 +4,16 @@ on:
   schedule:
     - cron: "*/5 * * * *"   # every 5 minutes (UTC)
   workflow_dispatch:
-# kick scheduler
+
+
+concurrency:
+  group: dresden-termin-monitor
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       TZ: Europe/Berlin
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -22,12 +28,12 @@ jobs:
         run: |
           echo "HEARTBEAT: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
 
-      # ✅ Time guard (Europe/Berlin). Only allow 07:00–19:00.
+      # ✅ Time guard (Europe/Berlin) – only allow 06:00–19:00
       - id: window
         name: Guard time window
         run: |
           HOUR=$(TZ=Europe/Berlin date +%H)
-          if [ "$HOUR" -ge 7 ] && [ "$HOUR" -lt 19 ]; then
+          if [ "$HOUR" -ge 6 ] && [ "$HOUR" -lt 19 ]; then
             echo "run=1" >> "$GITHUB_OUTPUT"
             echo "INSIDE_WINDOW $HOUR:00"
           else
@@ -41,7 +47,7 @@ jobs:
         with:
           node-version: "20"
 
-      # Create package.json (ES modules) and install Playwright
+      # Create package.json (ES modules)
       - name: Create package.json
         if: steps.window.outputs.run == '1'
         run: |
@@ -56,11 +62,12 @@ jobs:
           }
           EOF
 
+      # Hardened install with retry
       - name: Install dependencies & browser
         if: steps.window.outputs.run == '1'
         run: |
-          npm install --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npm install --no-audit --no-fund || (sleep 10 && npm install --no-audit --no-fund)
+          npx playwright install --with-deps chromium || (sleep 15 && npx playwright install --with-deps chromium)
 
       # Write the checker script (Telegram only notifies on success)
       - name: Write checker script
@@ -77,14 +84,14 @@ jobs:
             "Einbürgerung",
             "Staatsangehörigkeit"
           ];
-          const WINDOW = { startHour: 7, endHour: 19 }; // Berlin local hours for activity (07–19)
+          const WINDOW = { startHour: 6, endHour: 19 }; // Berlin local hours for activity (06–19)
 
           const NO_PATTERNS = [
-            /keine\s+freien\s+Termine/i,
-            /Zur\s*Zeit.*keine\s+Termine/i,
-            /Aktuell\s+sind\s+keine\s+Termine/i,
-            /Es\s+sind\s+keine\s+Termine/i,
-            /Derzeit\s+stehen\s+keine\s+Termine/i
+            /keine\\s+freien\\s+Termine/i,
+            /Zur\\s*Zeit.*keine\\s+Termine/i,
+            /Aktuell\\s+sind\\s+keine\\s+Termine/i,
+            /Es\\s+sind\\s+keine\\s+Termine/i,
+            /Derzeit\\s+stehen\\s+keine\\s+Termine/i
           ];
 
           function withinWindow() {
@@ -97,29 +104,29 @@ jobs:
             const token = process.env.TELEGRAM_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
             if (!token || !chatId) { console.log("TELEGRAM_SECRETS_MISSING"); return; }
-            const text = `*${title}*\n${message}\n[Open booking page](${URL})`;
-            const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            const text = `*${title}*\\n${message}\\n[Open booking page](${URL})`;
+            const res = await fetch(\`https://api.telegram.org/bot\${token}/sendMessage\`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" })
-            });
-            console.log("TELEGRAM_STATUS", res.status);
+            }).catch(()=>null);
+            console.log("TELEGRAM_STATUS", res?.status ?? "no-response");
           }
 
           const uniq = (arr) => [...new Set(arr)];
 
           // Very tolerant extractor: pulls date + up to 3 times if present
           function extractSlots(text) {
-            const dateRegex1 = /(\d{2}\.\d{2}\.\d{4})/; // 03.11.2025
-            const dateRegex2 = /(?:Mo|Di|Mi|Do|Fr|Sa|So)[.,]?\s+(\d{2}\.\d{2}\.\d{4})/i;
-            const timeRegex = /\b([01]?\d|2[0-3]):([0-5]\d)\b/g;
+            const dateRegex1 = /(\\d{2}\\.\\d{2}\\.\\d{4})/; // 03.11.2025
+            const dateRegex2 = /(?:Mo|Di|Mi|Do|Fr|Sa|So)[.,]?\\s+(\\d{2}\\.\\d{2}\\.\\d{4})/i;
+            const timeRegex = /\\b([01]?\\d|2[0-3]):([0-5]\\d)\\b/g;
 
             const dateMatch = text.match(dateRegex1) || text.match(dateRegex2);
             const timesRaw = text.match(timeRegex) || [];
             const times = uniq(timesRaw.map(t => t.trim()));
 
             // Try to find a location-ish string (best-effort; may be null)
-            const locMatch = text.match(/Standort[:\s]*([A-Za-zÄÖÜäöüß\-\s\/]+)</i);
+            const locMatch = text.match(/Standort[:\\s]*([A-Za-zÄÖÜäöüß\\-\\s\\/]+)</i);
             const location = locMatch ? locMatch[1].trim() : null;
 
             return { date: dateMatch ? (dateMatch[1] || dateMatch[0]) : null, times, location };
@@ -148,14 +155,13 @@ jobs:
 
               // Select the service (try several label variants)
               try {
-                let clicked = false;
                 for (const s of SERVICE_TEXTS) {
                   const service = page.getByText(s, { exact: false }).first();
-                  if ((await service.count()) > 0) { await service.click({ force: true }); clicked = true; break; }
-                  const label = page.locator(\`label:has-text("${s}")\`);
-                  if ((await label.count()) > 0) { await label.click({ force: true }); clicked = true; break; }
+                  if ((await service.count()) > 0) { await service.click({ force: true }); break; }
+                  const label = page.locator(\`label:has-text("\${s}")\`);
+                  if ((await label.count()) > 0) { await label.click({ force: true }); break; }
                 }
-                // If nothing clickable was found, continue anyway—some portals auto-select a default.
+                // If nothing clickable was found, some portals auto-select a default.
               } catch {}
 
               // Click "Weiter" if present to reach the calendar/suggestions
@@ -183,7 +189,7 @@ jobs:
 
               // Otherwise try to extract times from combined HTML + text
               const html = await page.content();
-              const { date, times, location } = extractSlots(html + "\n" + bodyText);
+              const { date, times, location } = extractSlots(html + "\\n" + bodyText);
 
               if (times.length > 0) {
                 const top3 = times.slice(0, 3).join(", ");
@@ -208,6 +214,12 @@ jobs:
           })();
           EOF
 
-      - name: Run checker
+      # Soft-exit so the job never fails (prevents failure emails)
+      - name: Run checker (never fail)
         if: steps.window.outputs.run == '1'
-        run: npm run check
+        run: |
+          set +e
+          npm run check
+          CODE=$?
+          echo "CHECK_EXIT_CODE=$CODE"
+          exit 0
