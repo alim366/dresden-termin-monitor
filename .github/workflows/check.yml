@@ -22,13 +22,28 @@ jobs:
         run: |
           echo "HEARTBEAT: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
 
+      # ✅ Time guard (Europe/Berlin). Only allow 07:00–19:00.
+      - id: window
+        name: Guard time window
+        run: |
+          HOUR=$(TZ=Europe/Berlin date +%H)
+          if [ "$HOUR" -ge 7 ] && [ "$HOUR" -lt 19 ]; then
+            echo "run=1" >> "$GITHUB_OUTPUT"
+            echo "INSIDE_WINDOW $HOUR:00"
+          else
+            echo "run=0" >> "$GITHUB_OUTPUT"
+            echo "OUTSIDE_WINDOW $HOUR:00"
+          fi
+
       - name: Setup Node
+        if: steps.window.outputs.run == '1'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       # Create package.json (ES modules) and install Playwright
       - name: Create package.json
+        if: steps.window.outputs.run == '1'
         run: |
           cat > package.json << 'EOF'
           {
@@ -42,12 +57,14 @@ jobs:
           EOF
 
       - name: Install dependencies & browser
+        if: steps.window.outputs.run == '1'
         run: |
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
 
       # Write the checker script (Telegram only notifies on success)
       - name: Write checker script
+        if: steps.window.outputs.run == '1'
         run: |
           cat > check.js << 'EOF'
           import { chromium } from "playwright";
@@ -60,7 +77,7 @@ jobs:
             "Einbürgerung",
             "Staatsangehörigkeit"
           ];
-          const WINDOW = { startHour: 6, endHour: 19 }; // Berlin local hours for activity
+          const WINDOW = { startHour: 7, endHour: 19 }; // Berlin local hours for activity (07–19)
 
           const NO_PATTERNS = [
             /keine\s+freien\s+Termine/i,
@@ -110,6 +127,7 @@ jobs:
 
           (async () => {
             try {
+              // Belt & suspenders: skip inside script too
               if (!withinWindow()) { console.log("OUTSIDE_WINDOW_SKIP"); process.exit(0); }
 
               const browser = await chromium.launch({ headless: true });
@@ -134,7 +152,7 @@ jobs:
                 for (const s of SERVICE_TEXTS) {
                   const service = page.getByText(s, { exact: false }).first();
                   if ((await service.count()) > 0) { await service.click({ force: true }); clicked = true; break; }
-                  const label = page.locator(`label:has-text("${s}")`);
+                  const label = page.locator(\`label:has-text("${s}")\`);
                   if ((await label.count()) > 0) { await label.click({ force: true }); clicked = true; break; }
                 }
                 // If nothing clickable was found, continue anyway—some portals auto-select a default.
@@ -170,9 +188,9 @@ jobs:
               if (times.length > 0) {
                 const top3 = times.slice(0, 3).join(", ");
                 const parts = [];
-                if (date) parts.push(`Date: ${date}`);
-                parts.push(`Times: ${top3}`);
-                if (location) parts.push(`Place: ${location}`);
+                if (date) parts.push(\`Date: \${date}\`);
+                parts.push(\`Times: \${top3}\`);
+                if (location) parts.push(\`Place: \${location}\`);
                 const msg = parts.join(" | ");
                 await notifyTelegram("Einbürgerung Dresden – Slot available", msg);
                 console.log("SLOT_FOUND", msg);
@@ -191,4 +209,5 @@ jobs:
           EOF
 
       - name: Run checker
+        if: steps.window.outputs.run == '1'
         run: npm run check
