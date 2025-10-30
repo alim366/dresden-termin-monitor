@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: "*/5 * * * *"   # every 5 minutes (UTC)
   workflow_dispatch:
-# kick scheduler
+
 
 concurrency:
   group: dresden-termin-monitor
@@ -23,12 +23,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Heartbeat so you can see each run happened
       - name: Heartbeat
-        run: |
-          echo "HEARTBEAT: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
+        run: echo "HEARTBEAT: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
 
-      # ✅ Time guard (Europe/Berlin) – only allow 06:00–19:00
+      # Only allow heavy steps 06:00–19:00 Berlin time
       - id: window
         name: Guard time window
         run: |
@@ -47,7 +45,6 @@ jobs:
         with:
           node-version: "20"
 
-      # Create package.json (ES modules)
       - name: Create package.json
         if: steps.window.outputs.run == '1'
         run: |
@@ -62,14 +59,12 @@ jobs:
           }
           EOF
 
-      # Hardened install with retry
-      - name: Install dependencies & browser
+      - name: Install dependencies & browser (with retry)
         if: steps.window.outputs.run == '1'
         run: |
           npm install --no-audit --no-fund || (sleep 10 && npm install --no-audit --no-fund)
           npx playwright install --with-deps chromium || (sleep 15 && npx playwright install --with-deps chromium)
 
-      # Write the checker script (Telegram only notifies on success)
       - name: Write checker script
         if: steps.window.outputs.run == '1'
         run: |
@@ -78,21 +73,22 @@ jobs:
 
           // --- Config ---
           const URL = "https://termine-buergerbuero.dresden.de/select2?md=1";
-          // Wording can vary; adjust if the city changes the label:
           const SERVICE_TEXTS = [
             "Antragsabgabe Einbürgerung",
             "Einbürgerung",
             "Staatsangehörigkeit"
           ];
-          const WINDOW = { startHour: 6, endHour: 19 }; // Berlin local hours for activity (06–19)
+          const WINDOW = { startHour: 6, endHour: 19 }; // 06–19 Berlin
 
           const NO_PATTERNS = [
-            /keine\\s+freien\\s+Termine/i,
-            /Zur\\s*Zeit.*keine\\s+Termine/i,
-            /Aktuell\\s+sind\\s+keine\\s+Termine/i,
-            /Es\\s+sind\\s+keine\\s+Termine/i,
-            /Derzeit\\s+stehen\\s+keine\\s+Termine/i
+            /keine\s+freien\s+Termine/i,
+            /Zur\s*Zeit.*keine\s+Termine/i,
+            /Aktuell\s+sind\s+keine\s+Termine/i,
+            /Es\s+sind\s+keine\s+Termine/i,
+            /Derzeit\s+stehen\s+keine\s+Termine/i
           ];
+
+          const uniq = (a) => [...new Set(a)];
 
           function withinWindow() {
             const fmt = new Intl.DateTimeFormat("de-DE", { timeZone: "Europe/Berlin", hour: "2-digit", hour12: false });
@@ -104,8 +100,8 @@ jobs:
             const token = process.env.TELEGRAM_TOKEN;
             const chatId = process.env.TELEGRAM_CHAT_ID;
             if (!token || !chatId) { console.log("TELEGRAM_SECRETS_MISSING"); return; }
-            const text = `*${title}*\\n${message}\\n[Open booking page](${URL})`;
-            const res = await fetch(\`https://api.telegram.org/bot\${token}/sendMessage\`, {
+            const text = `*${title}*\n${message}\n[Open booking page](${URL})`;
+            const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" })
@@ -113,20 +109,16 @@ jobs:
             console.log("TELEGRAM_STATUS", res?.status ?? "no-response");
           }
 
-          const uniq = (arr) => [...new Set(arr)];
-
-          // Very tolerant extractor: pulls date + up to 3 times if present
           function extractSlots(text) {
-            const dateRegex1 = /(\\d{2}\\.\\d{2}\\.\\d{4})/; // 03.11.2025
-            const dateRegex2 = /(?:Mo|Di|Mi|Do|Fr|Sa|So)[.,]?\\s+(\\d{2}\\.\\d{2}\\.\\d{4})/i;
-            const timeRegex = /\\b([01]?\\d|2[0-3]):([0-5]\\d)\\b/g;
+            const dateRegex1 = /(\d{2}\.\d{2}\.\d{4})/;
+            const dateRegex2 = /(?:Mo|Di|Mi|Do|Fr|Sa|So)[.,]?\s+(\d{2}\.\d{2}\.\d{4})/i;
+            const timeRegex = /\b([01]?\d|2[0-3]):([0-5]\d)\b/g;
 
             const dateMatch = text.match(dateRegex1) || text.match(dateRegex2);
             const timesRaw = text.match(timeRegex) || [];
             const times = uniq(timesRaw.map(t => t.trim()));
 
-            // Try to find a location-ish string (best-effort; may be null)
-            const locMatch = text.match(/Standort[:\\s]*([A-Za-zÄÖÜäöüß\\-\\s\\/]+)</i);
+            const locMatch = text.match(/Standort[:\s]*([A-Za-zÄÖÜäöüß\-\s\/]+)</i);
             const location = locMatch ? locMatch[1].trim() : null;
 
             return { date: dateMatch ? (dateMatch[1] || dateMatch[0]) : null, times, location };
@@ -134,7 +126,8 @@ jobs:
 
           (async () => {
             try {
-              // Belt & suspenders: skip inside script too
+              console.log("CHECK_STARTED");
+
               if (!withinWindow()) { console.log("OUTSIDE_WINDOW_SKIP"); process.exit(0); }
 
               const browser = await chromium.launch({ headless: true });
@@ -142,8 +135,9 @@ jobs:
               const page = await ctx.newPage();
 
               await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+              console.log("NAVIGATED");
 
-              // Optional: accept cookies if visible
+              // Try cookie consent
               for (const label of ["OK", "Akzeptieren", "Einverstanden"]) {
                 try {
                   const btn = page.getByRole("button", { name: label }).first();
@@ -153,50 +147,48 @@ jobs:
                 } catch {}
               }
 
-              // Select the service (try several label variants)
+              // Select service
               try {
                 for (const s of SERVICE_TEXTS) {
                   const service = page.getByText(s, { exact: false }).first();
-                  if ((await service.count()) > 0) { await service.click({ force: true }); break; }
-                  const label = page.locator(\`label:has-text("\${s}")\`);
-                  if ((await label.count()) > 0) { await label.click({ force: true }); break; }
+                  if ((await service.count()) > 0) { await service.click({ force: true }); console.log("SERVICE_CLICKED", s); break; }
+                  const label = page.locator(`label:has-text("${s}")`);
+                  if ((await label.count()) > 0) { await label.click({ force: true }); console.log("SERVICE_LABEL_CLICKED", s); break; }
                 }
-                // If nothing clickable was found, some portals auto-select a default.
               } catch {}
 
-              // Click "Weiter" if present to reach the calendar/suggestions
+              // Click "Weiter"
               try {
                 const weiter = page.getByRole("button", { name: /weiter/i }).first();
                 if ((await weiter.count()) > 0) {
-                  await weiter.click({ force: true });
+                  await weiter.click({ force: true }); console.log("WEITER_CLICKED");
                 } else {
-                  await page.locator("text=Weiter").first().click({ timeout: 5000 }).catch(()=>{});
+                  await page.locator("text=Weiter").first().click({ timeout: 5000 }).then(()=>console.log("WEITER_TEXT_CLICKED")).catch(()=>{});
                 }
               } catch {}
 
-              // Give the page a moment to render results
               await page.waitForTimeout(2500);
+              console.log("AFTER_WEITER");
 
-              // Read text of the page (covers most TEVIS templates)
               const bodyText = await page.locator("body").innerText();
+              console.log("BODY_LEN", bodyText.length);
 
-              // If it explicitly says "no appointments", do nothing
               if (NO_PATTERNS.some(rx => rx.test(bodyText))) {
                 console.log("NO_SLOTS");
                 await browser.close();
                 process.exit(0);
               }
 
-              // Otherwise try to extract times from combined HTML + text
               const html = await page.content();
-              const { date, times, location } = extractSlots(html + "\\n" + bodyText);
+              const { date, times, location } = extractSlots(html + "\n" + bodyText);
+              console.log("TIMES_FOUND", times.length);
 
               if (times.length > 0) {
                 const top3 = times.slice(0, 3).join(", ");
                 const parts = [];
-                if (date) parts.push(\`Date: \${date}\`);
-                parts.push(\`Times: \${top3}\`);
-                if (location) parts.push(\`Place: \${location}\`);
+                if (date) parts.push(`Date: ${date}`);
+                parts.push(`Times: ${top3}`);
+                if (location) parts.push(`Place: ${location}`);
                 const msg = parts.join(" | ");
                 await notifyTelegram("Einbürgerung Dresden – Slot available", msg);
                 console.log("SLOT_FOUND", msg);
@@ -207,14 +199,12 @@ jobs:
               await browser.close();
               process.exit(0);
             } catch (e) {
-              // Don’t alert on errors; just log to Action and exit OK (so cron continues)
               console.log("CHECK_FAILED:", e?.message || String(e));
               process.exit(0);
             }
           })();
           EOF
 
-      # Soft-exit so the job never fails (prevents failure emails)
       - name: Run checker (never fail)
         if: steps.window.outputs.run == '1'
         run: |
